@@ -6,11 +6,16 @@ from torch.utils.data  import DataLoader,TensorDataset
 import torch.nn as nn
 from torch.autograd import Variable
 import numpy as np
-import glob
+import os
+import argparse
 
 
-dirs = glob.glob("NewProjections/CBCTcor*")
+parser = argparse.ArgumentParser()
 
+parser.add_argument("files",nargs='+',help='Projection files to scatter correct')
+parser.add_argument('--output_dir',help="Output directory")
+
+args = parser.parse_args()
 
 import ScatterNet
 
@@ -23,32 +28,29 @@ state_dict = torch.load("trained_models/model_103.trch") #Model used for article
 model = nn.DataParallel(model)
 model.load_state_dict(state_dict)
 
-for dir in dirs:
+for proj_file in args.files:
     print(dir)
-    projections = sitk.ReadImage(dir+"/ProjectionData/CBCT_projections_rtk_binned.mha")
-    corrected_projections = sitk.ReadImage(dir+"/ProjectionData/CBCT_projections_cor_CF_1.6.mha")
-    # corrected_projections = projections
+    stk_projections = sitk.ReadImage(proj_file)
 
 
-    data = sitk.GetArrayFromImage(projections)
-    data_corr = sitk.GetArrayFromImage(corrected_projections)
+
+    data = sitk.GetArrayFromImage(stk_projections)
+
     print("Loaded")
     data = np.pad(data,[(0,0),(4,4),(4,4)],mode="edge")
 
     print("Padded")
 
 
-# var = Variable(torch.from_numpy(data[:,np.newaxis,...]).float().cuda())
 
-
-    loader= DataLoader(TensorDataset(torch.from_numpy(data[:,np.newaxis,...]),torch.from_numpy(data_corr[:,np.newaxis,...])),batch_size=8,pin_memory=True)
+    loader= DataLoader(TensorDataset(torch.from_numpy(data[:,np.newaxis,...]),torch.from_numpy(data[:,np.newaxis,...])),batch_size=8,pin_memory=True)
 
     total_projections = []
     for projections,_ in loader:
-        var = Variable(projections.float())
-        var.volatile = True
-        data_net_corrected = model(var)
-        # data_net_corrected = -torch.log(data_net_corrected/65536)
+        with torch.no_grad():
+            var = Variable(projections.float())
+            data_net_corrected = model(var)
+
         data_net_corrected = data_net_corrected.data.cpu().numpy()
         total_projections.append(data_net_corrected)
 
@@ -56,11 +58,11 @@ for dir in dirs:
     total_projections[np.isinf(total_projections)] = 0
     total_projections = total_projections[:,4:-4,4:-4]
 
-    print(dir, np.mean((total_projections-data_corr)**2))
+
 
     total_projections = sitk.GetImageFromArray(total_projections)
-    total_projections.CopyInformation(corrected_projections)
-    sitk.WriteImage(total_projections,dir+"/ProjectionData/ScatterNet2_projections.mha")
+    total_projections.CopyInformation(stk_projections)
+    sitk.WriteImage(total_projections,args.output_dir + "/" + os.path.basename(proj_file))
 
 
 
